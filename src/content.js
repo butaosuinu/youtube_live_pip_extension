@@ -16,6 +16,8 @@
     'yt-live-chat-viewer-engagement-message-renderer'
   ].join(',');
   const MAX_MIRRORED_MESSAGES = 80;
+  const AUTHOR_TYPES = ['owner', 'moderator', 'member', 'verified'];
+  const BADGE_GLYPH = { owner: '★', moderator: '🛡', member: '★', verified: '✓' };
 
   let retryTimer = 0;
   let latestChatMessages = [];
@@ -246,19 +248,95 @@
     return queryDeepAll(sourceDocument, CHAT_MESSAGE_SELECTOR)
       .slice(-MAX_MIRRORED_MESSAGES)
       .map(readChatMessage)
-      .filter((message) => message.author || message.body);
+      .filter((message) => message.author || message.body || message.bodyParts.length > 0);
+  }
+
+  function readAuthorType(renderer) {
+    const raw = (renderer.getAttribute('author-type') || '').trim().toLowerCase();
+    if (AUTHOR_TYPES.includes(raw)) return raw;
+
+    const nameEl = renderer.querySelector('#author-name');
+    const nameType = (nameEl?.getAttribute('type') || '').trim().toLowerCase();
+    if (AUTHOR_TYPES.includes(nameType)) return nameType;
+
+    for (const type of AUTHOR_TYPES) {
+      if (nameEl?.classList.contains(type)) return type;
+    }
+
+    return '';
+  }
+
+  function readAuthorBadges(renderer) {
+    const container =
+      renderer.querySelector('#chat-badges') ||
+      renderer.querySelector('#author-badges') ||
+      renderer;
+    const badges = Array.from(container.querySelectorAll('yt-live-chat-author-badge-renderer'));
+
+    return badges
+      .map((badge) => {
+        const type = (badge.getAttribute('type') || '').trim().toLowerCase();
+        const label = (
+          badge.getAttribute('aria-label') ||
+          badge.getAttribute('shared-tooltip-text') ||
+          readText(badge.querySelector('#tooltip')) ||
+          ''
+        ).trim();
+        const imgEl = badge.querySelector('#image img, img#img, #image yt-img-shadow img');
+        const rawSrc = imgEl?.getAttribute('src') || imgEl?.src || '';
+        const iconUrl = /^https:\/\//i.test(rawSrc) ? rawSrc : '';
+        return { type, label, iconUrl };
+      })
+      .filter((badge) => badge.type || badge.iconUrl || badge.label);
+  }
+
+  function readMessageContent(root) {
+    const parts = [];
+    if (!root) return parts;
+
+    const walk = (node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          if (child.textContent) parts.push({ type: 'text', text: child.textContent });
+        } else if (child.nodeName === 'IMG') {
+          const alt = child.getAttribute('alt') || '';
+          const src = child.getAttribute('src') || child.src || '';
+          parts.push({ type: 'emoji', alt, url: /^https:\/\//i.test(src) ? src : '' });
+        } else if (child.childNodes && child.childNodes.length > 0) {
+          walk(child);
+        }
+      }
+    };
+    walk(root);
+
+    return parts;
+  }
+
+  function partsToText(parts) {
+    return parts
+      .map((part) => (part.type === 'text' ? part.text : part.alt || ''))
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   function readChatMessage(renderer) {
+    const bodyParts = readMessageContent(renderer.querySelector('#message'));
+    const body = bodyParts.length > 0
+      ? partsToText(bodyParts)
+      : (
+          readText(renderer.querySelector('#purchase-amount')) ||
+          readText(renderer.querySelector('#header-subtext')) ||
+          readText(renderer)
+        );
+
     return {
       time: readText(renderer.querySelector('#timestamp')),
       author: readText(renderer.querySelector('#author-name, #author-text')),
-      body: (
-        readText(renderer.querySelector('#message')) ||
-        readText(renderer.querySelector('#purchase-amount')) ||
-        readText(renderer.querySelector('#header-subtext')) ||
-        readText(renderer)
-      )
+      authorType: readAuthorType(renderer),
+      badges: readAuthorBadges(renderer),
+      bodyParts,
+      body
     };
   }
 
@@ -281,29 +359,37 @@
   }
 
   function createChatMessageElement(pipWindow, message) {
-    const item = pipWindow.document.createElement('div');
+    const doc = pipWindow.document;
+    const item = doc.createElement('div');
     item.className = 'ytpip-chat-item';
+    if (message.authorType) {
+      item.classList.add('ytpip-author-' + message.authorType);
+    }
 
-    const meta = pipWindow.document.createElement('div');
+    const meta = doc.createElement('div');
     meta.className = 'ytpip-chat-meta';
 
     if (message.time) {
-      const time = pipWindow.document.createElement('span');
+      const time = doc.createElement('span');
       time.className = 'ytpip-chat-time';
       time.textContent = message.time;
       meta.appendChild(time);
     }
 
     if (message.author) {
-      const author = pipWindow.document.createElement('span');
+      const author = doc.createElement('span');
       author.className = 'ytpip-chat-author';
       author.textContent = message.author;
       meta.appendChild(author);
+
+      for (const badge of message.badges || []) {
+        meta.appendChild(createBadgeElement(doc, badge));
+      }
     }
 
-    const body = pipWindow.document.createElement('div');
+    const body = doc.createElement('div');
     body.className = 'ytpip-chat-message';
-    body.textContent = message.body;
+    appendMessageBody(doc, body, message);
 
     if (meta.children.length > 0) {
       item.appendChild(meta);
@@ -311,6 +397,66 @@
     item.appendChild(body);
 
     return item;
+  }
+
+  function createBadgeElement(doc, badge) {
+    const el = doc.createElement('span');
+    el.className = 'ytpip-badge';
+    if (/^[a-z-]+$/.test(badge.type)) el.classList.add('ytpip-badge-' + badge.type);
+    if (badge.label) el.title = badge.label;
+
+    if (badge.type === 'member' && badge.iconUrl) {
+      const img = doc.createElement('img');
+      img.className = 'ytpip-badge-img';
+      img.src = badge.iconUrl;
+      img.alt = badge.label || 'member';
+      img.referrerPolicy = 'no-referrer';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.addEventListener('error', () => {
+        const glyph = doc.createElement('span');
+        glyph.className = 'ytpip-badge-glyph';
+        glyph.textContent = BADGE_GLYPH.member;
+        img.replaceWith(glyph);
+      }, { once: true });
+      el.appendChild(img);
+    } else {
+      const glyph = doc.createElement('span');
+      glyph.className = 'ytpip-badge-glyph';
+      glyph.textContent = BADGE_GLYPH[badge.type] || '•';
+      el.appendChild(glyph);
+    }
+
+    return el;
+  }
+
+  function appendMessageBody(doc, body, message) {
+    const parts = message.bodyParts || [];
+    if (parts.length === 0) {
+      body.textContent = message.body;
+      return;
+    }
+
+    for (const part of parts) {
+      if (part.type === 'emoji' && part.url) {
+        const img = doc.createElement('img');
+        img.className = 'ytpip-emoji';
+        img.src = part.url;
+        img.alt = part.alt || '';
+        img.title = part.alt || '';
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.addEventListener('error', () => {
+          img.replaceWith(doc.createTextNode(part.alt || ''));
+        }, { once: true });
+        body.appendChild(img);
+      } else if (part.type === 'emoji') {
+        body.appendChild(doc.createTextNode(part.alt || ''));
+      } else {
+        body.appendChild(doc.createTextNode(part.text));
+      }
+    }
   }
 
   function queryDeepAll(root, selector) {
