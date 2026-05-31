@@ -1,12 +1,11 @@
 {
   "name": "youtube_live_pip_extension",
-  "version": "1.0.0",
-  "description": "",
+  "version": "0.1.0",
+  "description": "Chrome extension that opens YouTube live video and chat in one Document PiP window.",
   "license": "MIT",
   "author": "",
   "type": "mjs",
-  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --check src/pip-controls.js && node --check src/content.js"
   }
 }

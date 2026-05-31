@@ -1,0 +1,8 @@
+#yt-live-pip-button {
+  vertical-align: top;
+}
+
+#yt-live-pip-button svg {
+  display: block;
+  pointer-events: none;
+}
