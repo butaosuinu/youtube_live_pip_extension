@@ -73,7 +73,9 @@ body {
 
 .ytpip-chat-meta {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  align-items: center;
   min-width: 0;
   margin-bottom: 1px;
 }
@@ -91,6 +93,70 @@ body {
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ytpip-author-member .ytpip-chat-author {
+  color: #2ba640;
+}
+
+.ytpip-author-moderator .ytpip-chat-author {
+  color: #5e84f1;
+}
+
+.ytpip-author-verified .ytpip-chat-author {
+  color: #aaa;
+}
+
+.ytpip-author-owner .ytpip-chat-author {
+  padding: 0 4px;
+  color: #0f0f0f;
+  background: #ffd600;
+  border-radius: 2px;
+}
+
+.ytpip-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: 3px;
+  line-height: 1;
+}
+
+.ytpip-badge-img {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+.ytpip-badge-glyph {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ytpip-badge-member .ytpip-badge-glyph {
+  color: #2ba640;
+}
+
+.ytpip-badge-moderator .ytpip-badge-glyph {
+  color: #5e84f1;
+}
+
+.ytpip-badge-owner .ytpip-badge-glyph {
+  color: #ffd600;
+}
+
+.ytpip-badge-verified .ytpip-badge-glyph {
+  color: #aaa;
+}
+
+.ytpip-emoji {
+  width: 18px;
+  height: 18px;
+  margin: 0 1px;
+  object-fit: contain;
+  vertical-align: -4px;
 }
 
 .ytpip-chat-message {
