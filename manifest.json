@@ -13,6 +13,7 @@
       "matches": ["https://www.youtube.com/*"],
       "js": ["src/pip-controls.js", "src/content.js"],
       "css": ["src/content.css"],
+      "all_frames": true,
       "run_at": "document_idle"
     }
   ],
