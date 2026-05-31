@@ -321,9 +321,8 @@
   }
 
   function readChatMessage(renderer) {
-    const messageEl = renderer.querySelector('#message');
-    const bodyParts = readMessageContent(messageEl);
-    const body = messageEl
+    const bodyParts = readMessageContent(renderer.querySelector('#message'));
+    const body = bodyParts.length > 0
       ? partsToText(bodyParts)
       : (
           readText(renderer.querySelector('#purchase-amount')) ||
@@ -403,7 +402,7 @@
   function createBadgeElement(doc, badge) {
     const el = doc.createElement('span');
     el.className = 'ytpip-badge';
-    if (badge.type) el.classList.add('ytpip-badge-' + badge.type);
+    if (/^[a-z-]+$/.test(badge.type)) el.classList.add('ytpip-badge-' + badge.type);
     if (badge.label) el.title = badge.label;
 
     if (badge.type === 'member' && badge.iconUrl) {
