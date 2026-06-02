@@ -122,7 +122,7 @@ window.YtPipControls = (function () {
     on(volume, 'input', setVolume);
     on(video, 'volumechange', updateVolume);
 
-    if (mode === 'archive') {
+    if (mode !== 'live') {
       on(video, 'timeupdate', updateSeek);
       on(video, 'durationchange', updateSeek);
       on(video, 'loadedmetadata', updateSeek);

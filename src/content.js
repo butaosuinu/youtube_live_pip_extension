@@ -7,6 +7,8 @@
   const RETRY_INTERVAL_MS = 500;
   const PIP_WIDTH = 480;
   const PIP_HEIGHT = 760;
+  const PIP_VIDEO_WIDTH = 480;
+  const PIP_VIDEO_HEIGHT = 270;
   const MESSAGE_CHANNEL = 'yt-live-pip-with-chat';
   const CHAT_MESSAGE_SELECTOR = [
     'yt-live-chat-text-message-renderer',
@@ -26,11 +28,15 @@
   function detectPageMode() {
     if (location.pathname !== '/watch') return null;
 
-    const isLive = Boolean(document.querySelector('.ytp-live'));
-    const hasChat = Boolean(document.querySelector('ytd-live-chat-frame#chat'));
+    const video = document.querySelector('video.html5-main-video');
+    const duration = video ? video.duration : NaN;
 
-    if (isLive) return 'live';
-    if (hasChat) return 'archive';
+    if (document.querySelector('.ytp-live') || duration === Infinity) return 'live';
+    if (document.querySelector('ytd-live-chat-frame#chat')) return 'archive';
+
+    // メタデータ未取得の間は live/archive を vod と誤判定しないよう確定を保留する
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+
     return 'vod';
   }
 
@@ -51,7 +57,7 @@
 
   function injectButton() {
     const mode = detectPageMode();
-    if ((mode !== 'live' && mode !== 'archive') || !supportsDocumentPiP()) {
+    if (mode === null || !supportsDocumentPiP()) {
       removeButton();
       return false;
     }
@@ -59,8 +65,16 @@
     const rightControls = document.querySelector('.ytp-right-controls');
     if (!rightControls) return false;
 
+    const buttonLabel = mode === 'vod' ? 'PiP で表示' : 'チャット付き PiP で表示';
+
     const existingButton = rightControls.querySelector(`#${BUTTON_ID}`);
-    if (existingButton?.dataset.ytLivePipVersion === SCRIPT_VERSION) return true;
+    if (existingButton?.dataset.ytLivePipVersion === SCRIPT_VERSION) {
+      if (existingButton.title !== buttonLabel) {
+        existingButton.title = buttonLabel;
+        existingButton.setAttribute('aria-label', buttonLabel);
+      }
+      return true;
+    }
     existingButton?.remove();
 
     const button = document.createElement('button');
@@ -68,8 +82,8 @@
     button.className = 'ytp-button';
     button.type = 'button';
     button.dataset.ytLivePipVersion = SCRIPT_VERSION;
-    button.title = 'チャット付き PiP で表示';
-    button.setAttribute('aria-label', 'チャット付き PiP で表示');
+    button.title = buttonLabel;
+    button.setAttribute('aria-label', buttonLabel);
     button.innerHTML = [
       '<svg height="100%" viewBox="0 0 36 36" width="100%" aria-hidden="true" focusable="false">',
       '<path d="M10.5 10.5h15v11h-15z" fill="none" stroke="#fff" stroke-width="2"/>',
@@ -108,7 +122,8 @@
 
   async function openPiP() {
     const mode = detectPageMode();
-    if (mode !== 'live' && mode !== 'archive') return;
+    if (mode === null) return;
+    const withChat = mode !== 'vod';
 
     const videoId = new URL(location.href).searchParams.get('v');
     const video = document.querySelector('video.html5-main-video');
@@ -138,14 +153,14 @@
     let restoreChat = () => {};
     try {
       pipWindow = await window.documentPictureInPicture.requestWindow({
-        width: PIP_WIDTH,
-        height: PIP_HEIGHT
+        width: withChat ? PIP_WIDTH : PIP_VIDEO_WIDTH,
+        height: withChat ? PIP_HEIGHT : PIP_VIDEO_HEIGHT
       });
 
       setupPiPDocument(pipWindow);
 
       const root = pipWindow.document.createElement('div');
-      root.className = 'ytpip-root';
+      root.className = withChat ? 'ytpip-root' : 'ytpip-root ytpip-no-chat';
       pipWindow.document.body.appendChild(root);
 
       const stage = pipWindow.document.createElement('div');
@@ -159,9 +174,12 @@
       }
 
       window.YtPipControls.mount(pipWindow, stage, video, mode);
-      const chatFrame = createChatFrame(pipWindow, videoId, mode);
-      restoreChat = chatFrame.restore;
-      root.appendChild(chatFrame.element);
+
+      if (withChat) {
+        const chatFrame = createChatFrame(pipWindow, videoId, mode);
+        restoreChat = chatFrame.restore;
+        root.appendChild(chatFrame.element);
+      }
 
       pipWindow.addEventListener('pagehide', () => {
         restoreVideo();
@@ -557,15 +575,24 @@
     clearInterval(retryTimer);
 
     let attempts = 0;
-    retryTimer = window.setInterval(() => {
-      attempts += 1;
-      if (injectButton() || attempts >= maxAttempts) {
+    const tick = () => {
+      const injected = injectButton();
+      // vod は live/archive シグナル (.ytp-live / chat frame) が未確定の途中段階でも
+      // 該当しうるため、確定モードになるまで polling を続けて早期停止しない。
+      // これにより archive のチャット枠が遅れて挿入されてもボタンが追従する。
+      const settled = injected && detectPageMode() !== 'vod';
+      if (settled || attempts >= maxAttempts) {
         clearInterval(retryTimer);
         retryTimer = 0;
       }
+    };
+
+    retryTimer = window.setInterval(() => {
+      attempts += 1;
+      tick();
     }, intervalMs);
 
-    injectButton();
+    tick();
   }
 
   function onNavigate() {
