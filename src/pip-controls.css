@@ -32,6 +32,15 @@ body {
   object-fit: contain;
 }
 
+.ytpip-no-chat {
+  grid-template-rows: 1fr;
+}
+
+.ytpip-no-chat .ytpip-stage {
+  aspect-ratio: auto;
+  height: 100%;
+}
+
 .ytpip-chat {
   display: block;
   width: 100%;
