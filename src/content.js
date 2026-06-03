@@ -18,11 +18,14 @@
     'yt-live-chat-viewer-engagement-message-renderer'
   ].join(',');
   const MAX_MIRRORED_MESSAGES = 80;
+  const PUBLISH_THROTTLE_MS = 300;
+  const SCROLL_STICK_THRESHOLD = 40;
   const AUTHOR_TYPES = ['owner', 'moderator', 'member', 'verified'];
   const BADGE_GLYPH = { owner: '★', moderator: '🛡', member: '★', verified: '✓' };
 
   let retryTimer = 0;
   let latestChatMessages = [];
+  let latestChatSignature = '';
   const chatSubscribers = new Set();
 
   function detectPageMode() {
@@ -256,14 +259,20 @@
 
   function getChatObserveTarget(sourceDocument) {
     return (
+      sourceDocument.querySelector('yt-live-chat-item-list-renderer #items') ||
       queryDeepAll(sourceDocument, '#items, yt-live-chat-item-list-renderer').at(-1) ||
       sourceDocument.body ||
       sourceDocument.documentElement
     );
   }
 
-  function getChatMessages(sourceDocument) {
-    return queryDeepAll(sourceDocument, CHAT_MESSAGE_SELECTOR)
+  function getChatMessages(root) {
+    // 通常は light DOM の querySelectorAll で全件取れる（高速・実測で deep 走査と同件数）。
+    // YouTube が #items を shadow root 下へ移す形に変わった場合のみ、
+    // getChatObserveTarget と整合する deep 走査にフォールバックする。
+    const direct = root.querySelectorAll(CHAT_MESSAGE_SELECTOR);
+    const nodes = direct.length > 0 ? Array.from(direct) : queryDeepAll(root, CHAT_MESSAGE_SELECTOR);
+    return nodes
       .slice(-MAX_MIRRORED_MESSAGES)
       .map(readChatMessage)
       .filter((message) => message.author || message.body || message.bodyParts.length > 0);
@@ -300,7 +309,10 @@
           readText(badge.querySelector('#tooltip')) ||
           ''
         ).trim();
-        const imgEl = badge.querySelector('#image img, img#img, #image yt-img-shadow img');
+        const imgEl =
+          type === 'member'
+            ? badge.querySelector('#image img, img#img, #image yt-img-shadow img')
+            : null;
         const rawSrc = imgEl?.getAttribute('src') || imgEl?.src || '';
         const iconUrl = /^https:\/\//i.test(rawSrc) ? rawSrc : '';
         return { type, label, iconUrl };
@@ -330,18 +342,39 @@
     return parts;
   }
 
-  function partsToText(parts) {
-    return parts
-      .map((part) => (part.type === 'text' ? part.text : part.alt || ''))
-      .join('')
-      .replace(/\s+/g, ' ')
-      .trim();
+  // 描画に使う全フィールドを織り込む。絵文字 url・バッジ・authorType の変化も
+  // キーに反映され、再描画（無変化スキップ解除・ノード再生成）が走るようにする。
+  function messageKey(message) {
+    return JSON.stringify([
+      message.time,
+      message.author,
+      message.authorType,
+      message.badges,
+      message.bodyParts,
+      message.body
+    ]);
+  }
+
+  // 同一内容メッセージ（絵文字のみ・空キー等）が衝突しないよう出現順に連番で一意化する。
+  function buildMessageKeys(messages) {
+    const seen = new Map();
+    return messages.map((message) => {
+      const base = messageKey(message);
+      const n = seen.get(base) || 0;
+      seen.set(base, n + 1);
+      return n === 0 ? base : base + '#' + n;
+    });
+  }
+
+  // 古い行の編集・更新も取りこぼさないよう全件のキーで署名する。
+  function messagesSignature(messages) {
+    return messages.length + ':' + buildMessageKeys(messages).join('|');
   }
 
   function readChatMessage(renderer) {
     const bodyParts = readMessageContent(renderer.querySelector('#message'));
     const body = bodyParts.length > 0
-      ? partsToText(bodyParts)
+      ? ''
       : (
           readText(renderer.querySelector('#purchase-amount')) ||
           readText(renderer.querySelector('#header-subtext')) ||
@@ -359,21 +392,53 @@
   }
 
   function renderChatMessages(pipWindow, list, messages) {
-    const fragment = pipWindow.document.createDocumentFragment();
-
     if (messages.length === 0) {
       const empty = pipWindow.document.createElement('div');
       empty.className = 'ytpip-chat-empty';
       empty.textContent = 'チャットを読み込み中';
-      fragment.appendChild(empty);
+      list.replaceChildren(empty);
+      return;
     }
 
-    for (const message of messages) {
-      fragment.appendChild(createChatMessageElement(pipWindow, message));
+    // DOM 変更前に「最下部付着中か」を 1 回だけ読み取る（レイアウトスラッシング回避）。
+    const stick =
+      list.scrollHeight - list.scrollTop - list.clientHeight < SCROLL_STICK_THRESHOLD;
+
+    const newKeys = buildMessageKeys(messages);
+    const newKeySet = new Set(newKeys);
+
+    // 新スナップショットに無い既存ノード（押し出された古いメッセージや empty）を除去。
+    for (const child of Array.from(list.children)) {
+      if (!child.dataset.key || !newKeySet.has(child.dataset.key)) {
+        child.remove();
+      }
     }
 
-    list.replaceChildren(fragment);
-    list.scrollTop = list.scrollHeight;
+    const existing = new Map();
+    for (const child of list.children) {
+      existing.set(child.dataset.key, child);
+    }
+
+    // 既存ノードは可能な限り再利用し、新規分だけ生成して順序を揃える（in-place 差分）。
+    let ref = list.firstChild;
+    for (let i = 0; i < messages.length; i++) {
+      let item = existing.get(newKeys[i]);
+      if (item) {
+        existing.delete(newKeys[i]);
+      } else {
+        item = createChatMessageElement(pipWindow, messages[i]);
+        item.dataset.key = newKeys[i];
+      }
+      if (ref === item) {
+        ref = ref.nextSibling;
+      } else {
+        list.insertBefore(item, ref);
+      }
+    }
+
+    if (stick) {
+      list.scrollTop = list.scrollHeight;
+    }
   }
 
   function createChatMessageElement(pipWindow, message) {
@@ -490,7 +555,7 @@
   }
 
   function readText(element) {
-    return (element?.innerText || element?.textContent || '').replace(/\s+/g, ' ').trim();
+    return (element?.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
   function createFallbackChatUrl(chatPath, videoId) {
@@ -507,10 +572,21 @@
 
   function initChatBridge() {
     const mode = location.pathname === '/live_chat' ? 'live' : 'archive';
-    let publishQueued = false;
+    const observeOptions = { childList: true, subtree: true };
+    let observeTarget = getChatObserveTarget(document);
+    let throttleTimer = 0;
+    let lastRun = 0;
+    let observer;
 
     const publish = () => {
-      publishQueued = false;
+      throttleTimer = 0;
+      lastRun = Date.now();
+      // 監視対象が配信切替・SPA 遷移で作り直されたら、再探索して observe し直す。
+      if (!observeTarget || !observeTarget.isConnected) {
+        observeTarget = getChatObserveTarget(document);
+        observer.disconnect();
+        observer.observe(observeTarget, observeOptions);
+      }
       const messages = getChatMessages(document);
       window.parent.postMessage({
         source: MESSAGE_CHANNEL,
@@ -520,23 +596,25 @@
       }, location.origin);
     };
 
+    // leading + trailing の時間スロットル。バースト中に毎フレーム走るのを防ぐ。
     const queuePublish = () => {
-      if (publishQueued) return;
-      publishQueued = true;
-      requestAnimationFrame(publish);
+      if (throttleTimer) return;
+      const wait = Math.max(0, PUBLISH_THROTTLE_MS - (Date.now() - lastRun));
+      if (wait === 0) {
+        publish();
+      } else {
+        throttleTimer = window.setTimeout(publish, wait);
+      }
     };
 
-    const observer = new MutationObserver(queuePublish);
-    observer.observe(getChatObserveTarget(document), {
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
+    observer = new MutationObserver(queuePublish);
+    observer.observe(observeTarget, observeOptions);
 
     const pollTimer = window.setInterval(queuePublish, 1000);
     window.addEventListener('pagehide', () => {
       observer.disconnect();
       window.clearInterval(pollTimer);
+      if (throttleTimer) window.clearTimeout(throttleTimer);
     }, { once: true });
 
     publish();
@@ -558,7 +636,12 @@
     const mode = detectPageMode();
     if ((mode === 'live' || mode === 'archive') && data.mode !== mode) return;
 
-    latestChatMessages = data.messages.slice(-MAX_MIRRORED_MESSAGES);
+    const messages = data.messages.slice(-MAX_MIRRORED_MESSAGES);
+    const signature = messagesSignature(messages);
+    if (signature === latestChatSignature) return;
+
+    latestChatSignature = signature;
+    latestChatMessages = messages;
     for (const subscriber of chatSubscribers) {
       subscriber(latestChatMessages);
     }
