@@ -43,6 +43,22 @@
     }
   }
 
+  function getParentVideoId() {
+    try {
+      if (window.parent && window.parent !== window) {
+        return getUrlVideoId(window.parent.location.href);
+      }
+    } catch {
+      return '';
+    }
+
+    return '';
+  }
+
+  function getChatBridgeVideoId() {
+    return getUrlVideoId(location.href) || getUrlVideoId(document.referrer) || getParentVideoId();
+  }
+
   function getChatFrameVideoId(chatFrame) {
     const iframe = chatFrame.querySelector('iframe');
     const urls = [
@@ -60,12 +76,28 @@
     return '';
   }
 
+  function getChatFrameWindow(chatFrame) {
+    return chatFrame.querySelector('iframe')?.contentWindow || null;
+  }
+
+  function isVisibleChatFrame(chatFrame) {
+    if (!chatFrame.isConnected || chatFrame.hidden) return false;
+
+    const style = window.getComputedStyle(chatFrame);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+
+    return chatFrame.getClientRects().length > 0;
+  }
+
   function getCurrentChatFrame(videoId = getWatchVideoId()) {
     if (!videoId) return null;
 
-    return Array
-      .from(document.querySelectorAll('ytd-live-chat-frame#chat'))
-      .find((chatFrame) => getChatFrameVideoId(chatFrame) === videoId) || null;
+    const chatFrames = Array.from(document.querySelectorAll('ytd-live-chat-frame#chat'));
+    const matchingFrame = chatFrames.find((chatFrame) => getChatFrameVideoId(chatFrame) === videoId);
+    if (matchingFrame) return matchingFrame;
+
+    // live_chat_replay iframes can be continuation-only URLs without a v parameter.
+    return chatFrames.find((chatFrame) => !getChatFrameVideoId(chatFrame) && isVisibleChatFrame(chatFrame)) || null;
   }
 
   function detectPageMode() {
@@ -653,6 +685,7 @@
 
   function initChatBridge() {
     const mode = location.pathname === '/live_chat' ? 'live' : 'archive';
+    const videoId = getChatBridgeVideoId();
     const observeOptions = { childList: true, subtree: true };
     let observeTarget = getChatObserveTarget(document);
     let throttleTimer = 0;
@@ -672,7 +705,7 @@
       window.parent.postMessage({
         source: MESSAGE_CHANNEL,
         type: 'chat-messages',
-        videoId: getUrlVideoId(location.href),
+        videoId,
         mode,
         messages
       }, location.origin);
@@ -717,7 +750,10 @@
 
     const mode = detectPageMode();
     const videoId = getWatchVideoId();
-    if (!videoId || typeof data.videoId !== 'string' || data.videoId !== videoId) return;
+    const chatFrame = getCurrentChatFrame(videoId);
+    const fromCurrentChatFrame = chatFrame && getChatFrameWindow(chatFrame) === event.source;
+    if (!videoId || typeof data.videoId !== 'string') return;
+    if (data.videoId !== videoId && !(data.videoId === '' && fromCurrentChatFrame)) return;
     if ((mode !== 'live' && mode !== 'archive') || data.mode !== mode) return;
 
     const messages = data.messages.slice(-MAX_MIRRORED_MESSAGES);
