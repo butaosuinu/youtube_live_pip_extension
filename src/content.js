@@ -26,16 +26,57 @@
   let retryTimer = 0;
   let latestChatMessages = [];
   let latestChatSignature = '';
+  let latestChatVideoId = '';
+  let latestChatMode = '';
   const chatSubscribers = new Set();
+
+  function getWatchVideoId() {
+    if (location.pathname !== '/watch') return '';
+    return new URL(location.href).searchParams.get('v') || '';
+  }
+
+  function getUrlVideoId(url) {
+    try {
+      return new URL(url, location.href).searchParams.get('v') || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function getChatFrameVideoId(chatFrame) {
+    const iframe = chatFrame.querySelector('iframe');
+    const urls = [
+      iframe?.src,
+      iframe?.getAttribute('src'),
+      iframe?.dataset.src,
+      chatFrame.getAttribute('src')
+    ];
+
+    for (const url of urls) {
+      const videoId = url ? getUrlVideoId(url) : '';
+      if (videoId) return videoId;
+    }
+
+    return '';
+  }
+
+  function getCurrentChatFrame(videoId = getWatchVideoId()) {
+    if (!videoId) return null;
+
+    return Array
+      .from(document.querySelectorAll('ytd-live-chat-frame#chat'))
+      .find((chatFrame) => getChatFrameVideoId(chatFrame) === videoId) || null;
+  }
 
   function detectPageMode() {
     if (location.pathname !== '/watch') return null;
 
+    const videoId = getWatchVideoId();
     const video = document.querySelector('video.html5-main-video');
     const duration = video ? video.duration : NaN;
 
     if (document.querySelector('.ytp-live') || duration === Infinity) return 'live';
-    if (document.querySelector('ytd-live-chat-frame#chat')) return 'archive';
+    if (getCurrentChatFrame(videoId)) return 'archive';
 
     // メタデータ未取得の間は live/archive を vod と誤判定しないよう確定を保留する
     if (!Number.isFinite(duration) || duration <= 0) return null;
@@ -206,8 +247,9 @@
   }
 
   function createChatFrame(pipWindow, videoId, mode) {
-    if (document.querySelector('ytd-live-chat-frame#chat') || latestChatMessages.length > 0) {
-      return createMirroredChat(pipWindow, mode);
+    const cachedMessages = getCachedChatMessages(videoId, mode);
+    if (getCurrentChatFrame(videoId) || cachedMessages.length > 0) {
+      return createMirroredChat(pipWindow, mode, videoId);
     }
 
     const chatPath = mode === 'live' ? 'live_chat' : 'live_chat_replay';
@@ -226,7 +268,7 @@
     };
   }
 
-  function createMirroredChat(pipWindow, mode) {
+  function createMirroredChat(pipWindow, mode, videoId) {
     const chat = pipWindow.document.createElement('section');
     chat.className = 'ytpip-chat ytpip-chat-mirror';
     chat.setAttribute('aria-label', mode === 'live' ? 'ライブチャット' : 'チャットのリプレイ');
@@ -245,9 +287,13 @@
     const render = (messages) => {
       renderChatMessages(pipWindow, list, messages);
     };
-    const subscriber = (messages) => render(messages);
+    const subscriber = (messages, nextVideoId, nextMode) => {
+      if (nextVideoId === videoId && nextMode === mode) {
+        render(messages);
+      }
+    };
     chatSubscribers.add(subscriber);
-    render(latestChatMessages);
+    render(getCachedChatMessages(videoId, mode));
 
     return {
       element: chat,
@@ -570,6 +616,41 @@
     return location.pathname === '/live_chat' || location.pathname === '/live_chat_replay';
   }
 
+  function getCachedChatMessages(videoId, mode) {
+    if (latestChatVideoId !== videoId || latestChatMode !== mode) return [];
+    return latestChatMessages;
+  }
+
+  function publishCachedChatMessages(videoId, mode, messages) {
+    latestChatVideoId = videoId;
+    latestChatMode = mode;
+    latestChatMessages = messages;
+
+    for (const subscriber of chatSubscribers) {
+      subscriber(latestChatMessages, latestChatVideoId, latestChatMode);
+    }
+  }
+
+  function clearCachedChatMessages() {
+    if (
+      latestChatMessages.length === 0 &&
+      latestChatSignature === '' &&
+      latestChatVideoId === '' &&
+      latestChatMode === ''
+    ) {
+      return;
+    }
+
+    latestChatMessages = [];
+    latestChatSignature = '';
+    latestChatVideoId = '';
+    latestChatMode = '';
+
+    for (const subscriber of chatSubscribers) {
+      subscriber(latestChatMessages, latestChatVideoId, latestChatMode);
+    }
+  }
+
   function initChatBridge() {
     const mode = location.pathname === '/live_chat' ? 'live' : 'archive';
     const observeOptions = { childList: true, subtree: true };
@@ -591,6 +672,7 @@
       window.parent.postMessage({
         source: MESSAGE_CHANNEL,
         type: 'chat-messages',
+        videoId: getUrlVideoId(location.href),
         mode,
         messages
       }, location.origin);
@@ -634,17 +716,16 @@
     }
 
     const mode = detectPageMode();
-    if ((mode === 'live' || mode === 'archive') && data.mode !== mode) return;
+    const videoId = getWatchVideoId();
+    if (!videoId || typeof data.videoId !== 'string' || data.videoId !== videoId) return;
+    if ((mode !== 'live' && mode !== 'archive') || data.mode !== mode) return;
 
     const messages = data.messages.slice(-MAX_MIRRORED_MESSAGES);
-    const signature = messagesSignature(messages);
+    const signature = [videoId, data.mode, messagesSignature(messages)].join(':');
     if (signature === latestChatSignature) return;
 
     latestChatSignature = signature;
-    latestChatMessages = messages;
-    for (const subscriber of chatSubscribers) {
-      subscriber(latestChatMessages);
-    }
+    publishCachedChatMessages(videoId, data.mode, messages);
   }
 
   function injectStylesheet(pipWindow, url) {
@@ -679,6 +760,8 @@
   }
 
   function onNavigate() {
+    clearCachedChatMessages();
+
     const pipWindow = getPiPWindow();
     if (pipWindow && !pipWindow.closed) {
       pipWindow.close();
