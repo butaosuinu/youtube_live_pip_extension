@@ -143,6 +143,18 @@ window.YtPipControls = (function () {
       liveBadge.classList.toggle('ytpip-behind', isBehindLive());
     };
 
+    // 一時停止中は timeupdate が発火しないため、その間だけ定期的に遅延状態を見直す
+    let liveTicker = 0;
+    const startLiveTicker = () => {
+      if (liveTicker) return;
+      liveTicker = pipWindow.setInterval(updateLiveState, 2000);
+    };
+    const stopLiveTicker = () => {
+      if (!liveTicker) return;
+      pipWindow.clearInterval(liveTicker);
+      liveTicker = 0;
+    };
+
     let hideTimer = 0;
     const showControls = () => {
       bar.classList.add('visible');
@@ -168,6 +180,10 @@ window.YtPipControls = (function () {
       on(liveBadge, 'click', goToLive);
       on(video, 'timeupdate', updateLiveState);
       on(video, 'seeked', updateLiveState); // 最新化直後に即時反映
+      on(video, 'pause', startLiveTicker); // 一時停止中も遅延を検知できるように
+      on(video, 'play', stopLiveTicker);
+      cleanupTasks.push(stopLiveTicker); // pagehide でタイマーを確実に停止
+      if (video.paused) startLiveTicker(); // 既に一時停止状態で開いた場合
       updateLiveState(); // 初期状態
     } else {
       on(video, 'timeupdate', updateSeek);
