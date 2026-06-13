@@ -103,7 +103,8 @@ window.YtPipControls = (function () {
 
     // しきい値: ライブエッジから何秒遅れたら「最新ではない」とみなすか
     const LIVE_BEHIND_THRESHOLD_SEC = 10;
-    let lastLiveCheck = 0;
+    // ライブ遅延状態を見直す間隔 (ms)。再生中・一時停止中・バッファリング中いずれも一定間隔で更新する
+    const LIVE_POLL_INTERVAL_MS = 2000;
 
     const nativeLiveBadge = () => document.querySelector('#movie_player .ytp-live-badge');
 
@@ -137,18 +138,12 @@ window.YtPipControls = (function () {
     };
 
     const updateLiveState = () => {
-      const now = performance.now();
-      if (now - lastLiveCheck < 1000) return; // 1秒スロットル
-      lastLiveCheck = now;
       liveBadge.classList.toggle('ytpip-behind', isBehindLive());
     };
 
-    // 一時停止中は timeupdate が発火しないため、その間だけ定期的に遅延状態を見直す
+    // timeupdate は一時停止中やバッファリング中 (waiting/stalled) は発火しないため、
+    // PiP が開いている間は低頻度ティッカーで常に遅延状態を見直す
     let liveTicker = 0;
-    const startLiveTicker = () => {
-      if (liveTicker) return;
-      liveTicker = pipWindow.setInterval(updateLiveState, 2000);
-    };
     const stopLiveTicker = () => {
       if (!liveTicker) return;
       pipWindow.clearInterval(liveTicker);
@@ -178,12 +173,9 @@ window.YtPipControls = (function () {
 
     if (mode === 'live') {
       on(liveBadge, 'click', goToLive);
-      on(video, 'timeupdate', updateLiveState);
       on(video, 'seeked', updateLiveState); // 最新化直後に即時反映
-      on(video, 'pause', startLiveTicker); // 一時停止中も遅延を検知できるように
-      on(video, 'play', stopLiveTicker);
+      liveTicker = pipWindow.setInterval(updateLiveState, LIVE_POLL_INTERVAL_MS);
       cleanupTasks.push(stopLiveTicker); // pagehide でタイマーを確実に停止
-      if (video.paused) startLiveTicker(); // 既に一時停止状態で開いた場合
       updateLiveState(); // 初期状態
     } else {
       on(video, 'timeupdate', updateSeek);
