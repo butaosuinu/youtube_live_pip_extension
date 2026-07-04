@@ -251,10 +251,21 @@ body {
 .ytpip-live-indicator {
   flex: 1 1 auto;
   min-width: 0;
+  padding: 0;
   color: #fff;
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.ytpip-live-indicator:hover,
+.ytpip-live-indicator:focus-visible {
+  opacity: 0.85;
+  outline: none;
 }
 
 .ytpip-live-indicator::before {
@@ -266,4 +277,13 @@ body {
   content: "";
   background: #f00;
   border-radius: 50%;
+}
+
+/* ライブエッジから遅れている状態: ドットを灰色にして「クリックで最新化」を示す */
+.ytpip-live-indicator.ytpip-behind {
+  color: #aaa;
+}
+
+.ytpip-live-indicator.ytpip-behind::before {
+  background: #909090;
 }

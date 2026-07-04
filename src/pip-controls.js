@@ -13,7 +13,7 @@ window.YtPipControls = (function () {
       '</button>',
       '<div class="ytpip-time" data-time></div>',
       '<input class="ytpip-seek" type="range" min="0" max="100" step="0.1" value="0" data-seek aria-label="シーク">',
-      '<div class="ytpip-live-indicator" data-live>LIVE</div>',
+      '<button class="ytpip-live-indicator" type="button" data-live aria-label="最新の位置に移動">LIVE</button>',
       '<button class="ytpip-btn ytpip-mute" type="button" aria-label="ミュート">',
       '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"></svg>',
       '</button>',
@@ -101,6 +101,55 @@ window.YtPipControls = (function () {
       }
     };
 
+    // しきい値: ライブエッジから何秒遅れたら「最新ではない」とみなすか
+    const LIVE_BEHIND_THRESHOLD_SEC = 10;
+    // ライブ遅延状態を見直す間隔 (ms)。再生中・一時停止中・バッファリング中いずれも一定間隔で更新する
+    const LIVE_POLL_INTERVAL_MS = 2000;
+
+    const nativeLiveBadge = () => document.querySelector('#movie_player .ytp-live-badge');
+
+    const goToLive = () => {
+      const ranges = video.seekable;
+      if (ranges && ranges.length > 0) {
+        const liveEdge = ranges.end(ranges.length - 1);
+        if (Number.isFinite(liveEdge)) {
+          video.currentTime = liveEdge;
+          if (video.paused) {
+            void video.play().catch(() => {});
+          }
+          return;
+        }
+      }
+      // フォールバック: ネイティブのライブバッジをクリック
+      nativeLiveBadge()?.click();
+    };
+
+    const isBehindLive = () => {
+      const ranges = video.seekable;
+      if (ranges && ranges.length > 0) {
+        const edge = ranges.end(ranges.length - 1);
+        if (Number.isFinite(edge)) {
+          return edge - video.currentTime > LIVE_BEHIND_THRESHOLD_SEC;
+        }
+      }
+      // seekable が空のときだけネイティブバッジのクラスを参照
+      const badge = nativeLiveBadge();
+      return badge ? !badge.classList.contains('ytp-live-badge-is-livehead') : false;
+    };
+
+    const updateLiveState = () => {
+      liveBadge.classList.toggle('ytpip-behind', isBehindLive());
+    };
+
+    // timeupdate は一時停止中やバッファリング中 (waiting/stalled) は発火しないため、
+    // PiP が開いている間は低頻度ティッカーで常に遅延状態を見直す
+    let liveTicker = 0;
+    const stopLiveTicker = () => {
+      if (!liveTicker) return;
+      pipWindow.clearInterval(liveTicker);
+      liveTicker = 0;
+    };
+
     let hideTimer = 0;
     const showControls = () => {
       bar.classList.add('visible');
@@ -122,7 +171,13 @@ window.YtPipControls = (function () {
     on(volume, 'input', setVolume);
     on(video, 'volumechange', updateVolume);
 
-    if (mode !== 'live') {
+    if (mode === 'live') {
+      on(liveBadge, 'click', goToLive);
+      on(video, 'seeked', updateLiveState); // 最新化直後に即時反映
+      liveTicker = pipWindow.setInterval(updateLiveState, LIVE_POLL_INTERVAL_MS);
+      cleanupTasks.push(stopLiveTicker); // pagehide でタイマーを確実に停止
+      updateLiveState(); // 初期状態
+    } else {
       on(video, 'timeupdate', updateSeek);
       on(video, 'durationchange', updateSeek);
       on(video, 'loadedmetadata', updateSeek);
